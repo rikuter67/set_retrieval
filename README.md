@@ -20,7 +20,8 @@ $ git clone https://github.com/hhachiya/set_rep_vector_and_asymmetric_attention.
 ```
 #### 2. Install the required packages from the ```requirements.txt``` file using conda:
 ```bash
-$ conda create --name xxx --file requirements.txt
+$ conda create --name set_match --file requirements.txt
+$ conda activate set_match
 ```
 #### 3. Download a zip file for each dataset, i.e., MNIST and shift15m, from [Google Drive](https://drive.google.com/drive/folders/1q6PLDC-nNkYsG9mdE_BoI_UBq6uMXtvS?usp=sharing) and place unzipped files to the corresponding ```pickle_data``` folder under each dataset folder as the following structure.  
 
@@ -127,7 +128,7 @@ The following table lists the breakdown numbers of sets for training and testing
 #### Example
 To train setRepVec_biPMA and setRepVec_pivot model for the trial 1-3 and the maximum number of items being 5, execute ```run.py``` as follows:
 ```bash
-for trial in {1,2,3}; do for mode in {3,4}; do python run.py --mode $mode --trial $trial --nItemMax 5; done; done
+for trial in {1,2,3}; do for mode in {3,4}; do python run.py -mode $mode -trial $trial -nItemMax 5; done; done
 ```
 Trained model and evaluation results are saved in ```experiment/[model_path]/[trial_index]```, e.g., ```experiment/setRepVec_pivot_32_setnorm_crossnorm/1```.
 The following images are examples of visualization of training/validation curves and the discriminative vector transformations in ```[trial_index]/result``` folder.
@@ -168,7 +169,7 @@ For the evaluation, we used 19,255 query and gallery pairs; each query set was s
 #### Example
 To train setRepVec_biPMA and setRepVec_pivot model for the trial 1-3, execute ```run.py``` as follows:
 ```bash
-for trial in {1,2,3}; do for mode in {3,4}; do python run.py --mode $mode --trial $trial; done; done
+for trial in {1,2,3}; do for mode in {3,4}; do python run.py -mode $mode -trial $trial; done; done
 ```
 - training/validation accuracy/loss curves:  
 <img height="300" src="img/loss_acc_shift15m.png">  

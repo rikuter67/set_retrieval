@@ -29,6 +29,12 @@ class trainDataGenerator(tf.keras.utils.Sequence):
             self.y_valid = pickle.load(fp)
         self.valid_num = len(self.x_valid)        
 
+        # load test data
+        with open(f'{data_path}/test.pkl', 'rb') as fp:
+            self.x_test = pickle.load(fp)
+            self.y_test = pickle.load(fp)
+        self.test_num = len(self.x_test)
+
         # width and height of image
         self.dim = len(self.x_train[0][0])
 
@@ -78,6 +84,11 @@ class trainDataGenerator(tf.keras.utils.Sequence):
         x_valid, x_size_val, y_valid = self.data_generation(self.x_valid, self.y_valid, self.inds, -1)
         return x_valid, x_size_val, y_valid
 
+    def data_generation_test(self):
+
+        x_test, x_size_test, y_test = self.data_generation(self.x_test, self.y_test, self.inds, -1)
+        return x_test, x_size_test, y_test
+        
     def __len__(self):
         # number of batches in one epoch
         batch_num = int(self.train_num/self.batch_size)
