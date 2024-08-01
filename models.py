@@ -2,42 +2,19 @@ import tensorflow as tf
 import numpy as np
 import sys
 import pdb
+
 #----------------------------
-
-class VLAD(tf.keras.Model):
-    def __init__(self, num_features, k_centers, rep_vec_num=None, baseChn=32, num_heads=2, max_channel_ratio=2, is_Cvec_linear=None, calc_set_sim='CS'):
-        super(VLAD, self).__init__()
-        self.num_features = num_features * max_channel_ratio  # Correct calculation of total features
-        self.k_centers = k_centers
-        self.rep_vec_num = rep_vec_num
-        self.baseChn = baseChn
-        self.is_Cvec_linear = is_Cvec_linear
+class random(tf.keras.Model):
+    def __init__(self, calc_set_sim='CS', baseChn=32, num_heads=2, max_channel_ratio=2):
+        super(random, self).__init__()
         self.calc_set_sim = calc_set_sim
-        self.fc_cnn_proj = tf.keras.layers.Dense(self.num_features, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn')
+        self.baseChn = baseChn
+        self.num_heads = num_heads
+        self.max_channel_ratio = max_channel_ratio
         self.cross_set_score = cross_set_score(head_size=baseChn*max_channel_ratio, num_heads=num_heads)
-        self.build_vlad_components()
+        self.fc_cnn_proj = tf.keras.layers.Dense(self.baseChn*self.max_channel_ratio, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn')
 
-    def build_vlad_components(self):
-        # Initialize the cluster centers, assignment weights, and biases
-        self.cluster_centers = self.add_weight(
-            shape=(self.k_centers, self.num_features),
-            initializer='random_normal',
-            trainable=True,
-            name='cluster_centers'
-        )
-        self.assignment_weights = self.add_weight(
-            shape=(self.num_features, self.k_centers),
-            initializer='random_normal',
-            trainable=True,
-            name='assignment_weights'
-        )
-        self.assignment_biases = self.add_weight(
-            shape=(self.k_centers,),
-            initializer='zeros',
-            trainable=True,
-            name='assignment_biases'
-        )
-    
+
     def cross_set_label(self, y):
         # rows of table
         y_rows = tf.tile(tf.expand_dims(y, -1), [1, tf.shape(y)[0]])
@@ -48,81 +25,28 @@ class VLAD(tf.keras.Model):
         labels = tf.cast(y_rows == y_cols, tf.float32)            
         return labels
 
-
-    def call(self, inputs):
-        x, x_size = inputs
-        # Project inputs through a fully connected layer
-        x = self.fc_cnn_proj(x)
-
-        # Compute soft assignment to the clusters
-        assignment = tf.nn.softmax(tf.matmul(x, self.assignment_weights) + self.assignment_biases, axis=-1)
-
-        # Calculate residuals to the cluster centers for each batch
-        # c_expand = tf.expand_dims(self.cluster_centers, 0)  # Previous expansion
-        c_expand = self.cluster_centers[None, :, :]  # New expansion to match (1, k_centers, num_features)
-        residuals = x[:, :, None, :] - c_expand  # Ensure broadcasting to [batch_size, num_features, k_centers, num_features]
-
-        # Weighted residuals
-        weighted_residuals = residuals * assignment[..., None]  # Shape [batch_size, num_features, k_centers, num_features]
-
-        # Summing over the features dimension to get a [batch_size, k_centers, num_features] tensor
-        vlad_vectors = tf.reduce_sum(weighted_residuals, axis=1)
-
-        # Intra-normalization of vlad vectors
-        vlad_vectors = tf.nn.l2_normalize(vlad_vectors, axis=-1)
-        
-        return vlad_vectors
-
-    # train step
-    def train_step(self,data):
-        # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
+    def train_step(self, data):
         x, y_true = data
-        # x : (nSet, nItemMax, dim) , x_size : (nSet, )
-        x, x_size = x 
-        
-        # gallery : (nSet, nItemMax, dim)
+        x, x_size = x
         gallery = x
-        # gallery linear projection(dimmension reduction) 
-        gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+        gallery = self.fc_cnn_proj(gallery)
+        
+        y_true = self.cross_set_label(y_true)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+        random_tensor = tf.random.uniform(shape=[40, 41, 64])
 
-        with tf.GradientTape() as tape:
-            # predict
-            # predSMN : (nSet, nItemMax, d)
-            predSMN = self((x, x_size))
-            
-            # cross set label creation
-            # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet) 
-            y_true = self.cross_set_label(y_true)
-            y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+        # compute similairty with gallery and f1_bert_score
+        # input gallery as x and predSMN as y in each bellow set similarity function. 
+        if self.calc_set_sim == 'CS':
+            set_score = self.cross_set_score((gallery, random_tensor), x_size)
+        elif self.calc_set_sim == 'BERTscore':
+            set_score = self.BERT_set_score((gallery, random_tensor), x_size)
+        else:
+            print("指定された集合間類似度を測る関数は存在しません")
+            sys.exit()
 
-            # compute similairty with gallery and f1_bert_score
-            # input gallery as x and predSMN as y in each bellow set similarity function. 
-            if self.calc_set_sim == 'CS':
-                set_score = self.cross_set_score((gallery, predSMN), x_size)
-            elif self.calc_set_sim == 'BERTscore':
-                set_score = self.BERT_set_score((gallery, predSMN), x_size)
-            else:
-                print("指定された集合間類似度を測る関数は存在しません")
-                sys.exit()
-
-            # # down sampling
-            # if self.is_neg_down_sample:
-            #     y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
-
-            # loss
-            loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
-
-        # train using gradients
-        trainable_vars = self.trainable_variables
-
-        # train parameters excepts for CNN
-        trainable_vars = [v for v in trainable_vars if 'cnn' not in v.name]
-        gradients = tape.gradient(loss, trainable_vars)
-
-        self.optimizer.apply_gradients(
-            (grad, var)
-            for (grad, var) in zip(gradients, trainable_vars)
-            if grad is not None)
+        # loss
+        loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
 
         # update metrics
         self.compiled_metrics.update_state(set_score, y_true)
@@ -130,11 +54,209 @@ class VLAD(tf.keras.Model):
         # return metrics as dictionary
         return {m.name: m.result() for m in self.metrics}
 
+    def test_step(self, data):
+        x, y_true = data
+        x, x_size = x
+        gallery = x
+        gallery = self.fc_cnn_proj(gallery)
+        y_true = self.cross_set_label(y_true)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+        random_tensor = tf.random.uniform(shape=[40, 41, 64])
 
+        if self.calc_set_sim == 'CS':
+            set_score = self.cross_set_score((gallery, random_tensor), x_size)
+        elif self.calc_set_sim == 'BERTscore':
+            set_score = self.BERT_set_score((gallery, random_tensor), x_size)
+        else:
+            print("指定された集合間類似度を測る関数は存在しません")
+            sys.exit()
+
+        # loss
+        self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
+
+        # update metrics
+        self.compiled_metrics.update_state(set_score, y_true)
+
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
+
+    
+
+# Linear Projection (SHIFT15M => head_size) 
+class MLP(tf.keras.Model):
+    def __init__(self, baseChn=1024, category_class_num=41, dropout_rate=0.5):
+        super(MLP, self).__init__()
+        self.fc1 = tf.keras.layers.Dense(baseChn, activation=None, use_bias=True)
+        self.bn1 = tf.keras.layers.BatchNormalization()
+        self.act1 = tf.keras.layers.Activation(tf.nn.gelu)
+        self.dropout1 = tf.keras.layers.Dropout(dropout_rate)
+        self.fc2 = tf.keras.layers.Dense(baseChn//4, activation=None, use_bias=True)
+        self.bn2 = tf.keras.layers.BatchNormalization()
+        self.act2 = tf.keras.layers.Activation(tf.nn.gelu)
+        self.dropout2 = tf.keras.layers.Dropout(dropout_rate)
+        self.fc3 = tf.keras.layers.Dense(category_class_num, activation='softmax', use_bias=True)
+        self.bn3 = tf.keras.layers.BatchNormalization()
+        self.act3 = tf.keras.layers.Activation(tf.nn.gelu)
+        self.dropout3 = tf.keras.layers.Dropout(dropout_rate)
+
+    def call(self, inputs, training=False):
+        x = self.fc1(inputs)
+        x = self.bn1(x, training=training)
+        x = self.act1(x)
+        x = self.dropout1(x, training=training)
+        x = self.fc2(x)
+        x = self.bn2(x, training=training)
+        x = self.act2(x)
+        x = self.dropout2(x, training=training)
+        output = self.fc3(x)
+        return output
+    
+    def train_step(self, data):
+        x, y, class_weights = data
+        sample_weights = tf.gather(class_weights, tf.cast(y, tf.int32))
+        with tf.GradientTape() as tape:
+            y_pred = self(x, training=True)
+            loss = self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        self.optimizer.apply_gradients(
+            (grad, var)
+            for (grad, var) in zip(gradients, trainable_vars)
+            if grad is not None)
+        # update metrics
+        self.compiled_metrics.update_state(y, y_pred)
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
+
+    # test step
+    def test_step(self, data):
+        x, y = data
+        # predict
+        y_pred = self(x, training=False)
+        # loss
+        self.compiled_loss(y, y_pred, regularization_losses=self.losses)
+        # update metrics
+        self.compiled_metrics.update_state(y, y_pred)
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
+#----------------------------
+
+class VLAD(tf.keras.Model):
+    def __init__(self, num_features, k_centers, batch_size, seed_vectors, rep_vec_num=None, baseChn=32, num_heads=2, max_channel_ratio=2, is_Cvec_linear=None, calc_set_sim='CS'):
+        super(VLAD, self).__init__()
+        self.num_features = num_features * max_channel_ratio
+        self.k_centers = k_centers
+        self.batch_size = batch_size
+        self.rep_vec_num = rep_vec_num
+        self.baseChn = baseChn
+        self.max_channel_ratio = max_channel_ratio
+        self.is_Cvec_linear = is_Cvec_linear
+        self.calc_set_sim = calc_set_sim
+
+        self.seed_vector = tf.convert_to_tensor(list(seed_vectors), dtype=tf.float32)
+        self.seed_fc = tf.keras.layers.Dense(self.num_features, use_bias=False, name='seed_fc')
+        self.fc_cnn_proj = tf.keras.layers.Dense(self.num_features, use_bias=False, name='setmatching_cnn')
+        self.cross_set_score = cross_set_score(head_size=baseChn*max_channel_ratio, num_heads=num_heads)
+        self.build_vlad_components()
+
+    def build_vlad_components(self):
+        initial_centers = self.seed_fc(self.seed_vector)
+        self.cluster_centers = self.add_weight(
+            name='cluster_centers',
+            shape=(self.k_centers, self.num_features),
+            initializer=tf.constant_initializer(value=initial_centers.numpy()),
+            trainable=True
+        )
+        self.assignment_weights = self.add_weight(
+            name='assignment_weights',
+            shape=(self.num_features, self.k_centers),
+            initializer='random_normal',
+            trainable=True
+        )
+        self.assignment_biases = self.add_weight(
+            name='assignment_biases',
+            shape=(self.k_centers,),
+            initializer='zeros',
+            trainable=True
+        )
+    
+    def cross_set_label(self, y):
+        y_rows = tf.tile(tf.expand_dims(y, -1), [1, tf.shape(y)[0]])
+        y_cols = tf.tile(tf.transpose(tf.expand_dims(y, -1)), [tf.shape(y)[0], 1])
+        labels = tf.cast(y_rows == y_cols, tf.float32)
+        return labels
+
+    def call(self, inputs):
+        x, x_size = inputs
+        x = self.fc_cnn_proj(x)
+        self.cluster_centers = self.seed_fc(self.seed_vector)
+        assignment = tf.nn.softmax(tf.matmul(x, self.assignment_weights) + self.assignment_biases, axis=-1)
+        c_expand = self.cluster_centers[None, :, :]
+        residuals = x[:, :, None, :] - c_expand
+        weighted_residuals = residuals * assignment[..., None]
+        vlad_vectors = tf.reduce_sum(weighted_residuals, axis=1)
+        vlad_vectors = tf.nn.l2_normalize(vlad_vectors, axis=-1)
+        # -------------------------------------------------------------------
+        vlad_vectors = tf.transpose(vlad_vectors, perm=[0, 2, 1])  # [batch_size, width, height] に変更
+        vlad_vectors = tf.keras.layers.Dense(41)(vlad_vectors)  # 各41次元に全結合層を適用
+        vlad_vectors = tf.transpose(vlad_vectors, perm=[0, 2, 1])  # [batch_size, height, width] に戻す
+        # vlad_vectors = tf.keras.layers.BatchNormalization()(vlad_vectors)
+        vlad_vectors = tf.nn.l2_normalize(vlad_vectors, axis=-1)
+        # -------------------------------------------------------------------
+
+        return vlad_vectors
+
+    def train_step(self, data):
+        x, y_true = data
+        x, x_size = x
+        gallery = x
+        gallery = self.fc_cnn_proj(gallery)
+
+        with tf.GradientTape() as tape:
+            predVLAD = self((x, x_size))
+            y_true = self.cross_set_label(y_true)
+            y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+            if self.calc_set_sim == 'CS':
+                set_score = self.cross_set_score((gallery, predVLAD), x_size)
+            elif self.calc_set_sim == 'BERTscore':
+                set_score = self.BERT_set_score((gallery, predVLAD), x_size)
+            else:
+                print("指定された集合間類似度を測る関数は存在しません")
+                sys.exit()
+
+            loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
+
+        trainable_vars = self.trainable_variables
+        gradients = tape.gradient(loss, trainable_vars)
+        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
+        self.compiled_metrics.update_state(set_score, y_true)
+        return {m.name: m.result() for m in self.metrics}
+
+    def test_step(self, data):
+        x, y_true = data
+        x, x_size = x
+        gallery = x
+        gallery = self.fc_cnn_proj(gallery)
+        y_true = self.cross_set_label(y_true)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+        predVLAD = self((x, x_size))
+        if self.calc_set_sim == 'CS':
+            set_score = self.cross_set_score((gallery, predVLAD), x_size)
+        elif self.calc_set_sim == 'BERTscore':
+            set_score = self.BERT_set_score((gallery, predVLAD), x_size)
+        else:
+            print("指定された集合間類似度を測る関数は存在しません")
+            sys.exit()
+
+        self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
+        self.compiled_metrics.update_state(set_score, y_true)
+        return {m.name: m.result() for m in self.metrics}
 
 # set matching network
 class SMN(tf.keras.Model):
-    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_final_linear=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', calc_set_sim='BERTscore', baseChn=32, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False, is_Cvec_linear=False):
+    def __init__(self, isCNN=True, is_set_norm=False, is_cross_norm=True, is_TrainableMLP=True, num_layers=1, num_heads=2, mode='setRepVec_pivot', calc_set_sim='BERTscore', baseChn=32, baseMlp = 512, rep_vec_num=1, seed_init = 0, cnn_class_num=2, max_channel_ratio=2, is_neg_down_sample=False, use_Cvec=True, is_Cvec_linear=False):
         super(SMN, self).__init__()
         self.isCNN = isCNN
         self.num_layers = num_layers
@@ -143,8 +265,10 @@ class SMN(tf.keras.Model):
         self.rep_vec_num = rep_vec_num
         self.seed_init = seed_init
         self.baseChn = baseChn
-        self.is_final_linear = is_final_linear
+        self.isTrainableMLP = is_TrainableMLP
+        self.baseMlpChn = baseMlp
         self.is_neg_down_sample = is_neg_down_sample
+        self.use_Cvec = use_Cvec
         self.is_Cvec_linear = is_Cvec_linear
         
         if self.seed_init != 0:
@@ -156,7 +280,7 @@ class SMN(tf.keras.Model):
         self.fc_cnn_proj = tf.keras.layers.Dense(baseChn*max_channel_ratio, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn')
         #---------------------
         # projection layer for pred
-        self.fc_pred_proj = tf.keras.layers.Dense(baseChn*max_channel_ratio, activation=tf.nn.gelu, use_bias=False, name='setmatching') # nameにcnn
+        self.fc_pred_proj = tf.keras.layers.Dense(baseChn*max_channel_ratio, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn') # nameにcnn
         #---------------------
         # encoder for query X
         self.set_emb = self.add_weight(name='set_emb',shape=(1,self.rep_vec_num,baseChn*max_channel_ratio),trainable=True)
@@ -193,98 +317,19 @@ class SMN(tf.keras.Model):
             # 4096 => 64次元への写像処理が必要
             self.set_emb = [self.add_weight(name='set_emb',shape=(self.dim_shift15,),initializer=self.custom_initializer(self.seed_init[i]),trainable=True) for i in range(len(self.seed_init))]
         #---------------------
-    # train step
-    def train_step(self,data):
-        # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
-        x, y_true = data
-        # x : (nSet, nItemMax, dim) , x_size : (nSet, )
-        x, x_size = x 
-        
-        # gallery : (nSet, nItemMax, dim)
-        gallery = x
-        # gallery linear projection(dimmension reduction) 
-        gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+        # MLP models
+        self.fc1 = tf.keras.layers.Dense(baseMlp, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn')
+        self.fc2 = tf.keras.layers.Dense(baseMlp//2, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn')
+        self.fc3 = tf.keras.layers.Dense(baseMlp//4, activation=tf.nn.gelu, use_bias=False, name='setmatching_cnn')
+        self.fc4 = tf.keras.layers.Dense(len(seed_init), activation='softmax', use_bias=False, name='setmatching_cnn')
 
-        with tf.GradientTape() as tape:
-            # predict
-            # predSMN : (nSet, nItemMax, d)
-            predCNN, predSMN, debug = self((x, x_size), training=True)
-            
-            # cross set label creation
-            # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet) 
-            y_true = self.cross_set_label(y_true)
-            y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
-
-            pdb.set_trace()
-
-            # compute similairty with gallery and f1_bert_score
-            # input gallery as x and predSMN as y in each bellow set similarity function. 
-            if self.calc_set_sim == 'CS':
-                set_score = self.cross_set_score((gallery, predSMN), x_size)
-            elif self.calc_set_sim == 'BERTscore':
-                set_score = self.BERT_set_score((gallery, predSMN), x_size)
-            else:
-                print("指定された集合間類似度を測る関数は存在しません")
-                sys.exit()
-
-            # # down sampling
-            # if self.is_neg_down_sample:
-            #     y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
-
-            # loss
-            loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
-
-        # train using gradients
-        trainable_vars = self.trainable_variables
-
-        # train parameters excepts for CNN
-        trainable_vars = [v for v in trainable_vars if 'cnn' not in v.name]
-        gradients = tape.gradient(loss, trainable_vars)
-
-        self.optimizer.apply_gradients(
-            (grad, var)
-            for (grad, var) in zip(gradients, trainable_vars)
-            if grad is not None)
-
-        # update metrics
-        self.compiled_metrics.update_state(set_score, y_true)
-
-        # return metrics as dictionary
-        return {m.name: m.result() for m in self.metrics}
+    def custom_initializer(self, initial_values):
+        def initializer(shape, dtype=None):
+            # 次元ごとに異なる値を持つTensorを作成
+            values = [initial_values[i] for i in range(shape[0])]
+            return tf.constant(values, dtype=dtype)
+        return initializer
     
-    def test_step(self, data):
-        x, y_true = data  # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
-        x, x_size = x  # x : (nSet, nItemMax, dim), x_size : (nSet, )
-
-        if self.isCNN:
-            x, predCNN = self.CNN((x, x_size), training=False)
-        else:
-            x = self.fc_cnn_proj(x)  # input: (nSet, nItemMax, D=4096), output: (nSet, nItemMax, D=64(baseChn*max_channel_ratio))
-            predCNN = []
-
-        gallery = x  # gallery : (nSet, nItemMax, dim), gallery linear projection (dimension reduction)
-
-        y_true = self.cross_set_label(y_true)
-
-        predSMN = self((x, x_size), training=False)  # predSMN : (nSet, nItemMax, d)
-
-        if self.calc_set_sim == 'CS':
-            set_score = self.cross_set_score((gallery, predSMN), x_size)
-        elif self.calc_set_sim == 'BERTscore':
-            set_score = self.BERT_set_score((gallery, predSMN), x_size)
-        else:
-            print("指定された集合間類似度を測る関数は存在しません")
-            sys.exit()
-
-        # loss
-        self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
-
-        # update metrics
-        self.compiled_metrics.update_state(set_score, y_true)
-
-        # return metrics as dictionary
-        return {m.name: m.result() for m in self.metrics}
-
     def call(self, x):
         x, x_size = x
         debug = {}
@@ -296,7 +341,13 @@ class SMN(tf.keras.Model):
         if self.isCNN:
             x, predCNN = self.CNN((x,x_size),training=False)
         else:
-            x = self.fc_cnn_proj(x) # input: (nSet, nItemMax, D=4096) output:(nSet, nItemMax, D=64(baseChn*max_channel_ratio))
+            if self.isTrainableMLP:
+                x = self.fc1(x)
+                x = self.fc2(x)
+                x = self.fc3(x)
+
+            else:
+                x = self.fc_cnn_proj(x) # input: (nSet, nItemMax, D=4096) output:(nSet, nItemMax, D=64(baseChn*max_channel_ratio))
             predCNN = []
         
         debug['x_encoder_layer_0'] = x
@@ -323,52 +374,58 @@ class SMN(tf.keras.Model):
         #---------------------
 
         #---------------------
-        # add_embedding
-        if self.seed_init == 0:
-            y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
-        else:
-            y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
-            if self.is_Cvec_linear:
-                y_pred = self.fc_pred_proj(y_pred) # y_pred = self.fc_cnn_proj(y_pred) # y_pred = self.fc_pred_proj(y_pred)
+        if self.use_Cvec:
+            if self.isTrainableMLP:
+                if self.seed_init == 0:
+                    y_pred = tf.tile(self.set_emb, [nSet, 1,1])
+                else:
+                    y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
+                    y_pred = self.fc1(y_pred)
+                    y_pred = self.fc2(y_pred)
+                    y_pred = self.fc3(y_pred)
+                    
             else:
-                y_pred = self.fc_cnn_proj(y_pred)
-        y_pred_size = tf.constant(np.full(nSet,self.rep_vec_num).astype(np.float32))
+                # add_embedding
+                if self.seed_init == 0:
+                    y_pred = tf.tile(self.set_emb, [nSet,1,1]) # (nSet, nItemMax, D)
+                else:
+                    y_pred = tf.tile(tf.expand_dims(tf.stack(self.set_emb), axis=0),[nSet,1,1])
+                    if self.is_Cvec_linear:
+                        y_pred = self.fc_pred_proj(y_pred) # y_pred = self.fc_cnn_proj(y_pred) # y_pred = self.fc_pred_proj(y_pred)
+                    else:
+                        y_pred = self.fc_cnn_proj(y_pred)
+            y_pred_size = tf.constant(np.full(nSet,self.rep_vec_num).astype(np.float32))
 
+            #---------------------
+            # decoder (cross-attention)
+            debug[f'x_decoder_layer_0'] = x
+            for i in range(self.num_layers):
+        
+                if self.mode == 'setRepVec_pivot': # Bi-PMA + pivot-cross
+                    self.cross_attentions[i].pivot_cross = True
+
+                query = self.layer_norms_decq[i](y_pred,y_pred_size)
+                key = self.layer_norms_deck[i](x,x_size)
+
+                # input: (nSet, nItemMax, D), output:(nSet, nItemMax, D)
+                query = self.cross_attentions[i](query,key)
+                y_pred += query
+        
+                query = self.layer_norms_dec2[i](y_pred,y_pred_size)
+                
+
+                query = self.fcs_dec[i](query)
+                y_pred += query
+
+                debug[f'x_decoder_layer_{i+1}'] = x
+            x_dec = x
+            #---------------------
+        else: # text generation methods (only query X )
+            y_pred = x
         #---------------------
-        # decoder (cross-attention)
-        debug[f'x_decoder_layer_0'] = x
-        for i in range(self.num_layers):
-     
-            if self.mode == 'setRepVec_pivot': # Bi-PMA + pivot-cross
-                self.cross_attentions[i].pivot_cross = True
-
-            query = self.layer_norms_decq[i](y_pred,y_pred_size)
-            key = self.layer_norms_deck[i](x,x_size)
-
-            # input: (nSet, nItemMax, D), output:(nSet, nItemMax, D)
-            query = self.cross_attentions[i](query,key)
-            y_pred += query
-    
-            query = self.layer_norms_dec2[i](y_pred,y_pred_size)
-            
-
-            query = self.fcs_dec[i](query)
-            y_pred += query
-
-            debug[f'x_decoder_layer_{i+1}'] = x
-        x_dec = x
-        #---------------------
-
-        #---------------------
+        
 
         return predCNN, y_pred, debug
-    
-    def custom_initializer(self, initial_values):
-        def initializer(shape, dtype=None):
-            # 次元ごとに異なる値を持つTensorを作成
-            values = [initial_values[i] for i in range(shape[0])]
-            return tf.constant(values, dtype=dtype)
-        return initializer
     
     # compute cosine similarity between all pairs of items and BERTscore.
     def BERT_set_score(self, x, nItem,beta=0.2):
@@ -445,7 +502,6 @@ class SMN(tf.keras.Model):
 
         return f1_scores
     
-    
     # convert class labels to cross-set label（if the class-labels are same, 1, otherwise 0)
     def cross_set_label(self, y):
         # rows of table
@@ -490,18 +546,136 @@ class SMN(tf.keras.Model):
         y_pred = tf.concat([y_pred_pos,y_pred_neg],axis=0)
 
         return y_true, y_pred
+    # train step
+    def train_step(self,data):
+    
+        # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
+        x, y_true = data
+        # x : (nSet, nItemMax, dim) , x_size : (nSet, )
+        x, x_size = x 
+        
+        # gallery : (nSet, nItemMax, dim)
+        gallery = x
+        # gallery linear projection(dimmension reduction) 
+        if self.isTrainableMLP:
+            gallery = self.fc1(gallery)
+            gallery = self.fc2(gallery)
+            gallery = self.fc3(gallery)
+        else:
+            gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+
+        with tf.GradientTape() as tape:
+            # predict
+            # predSMN : (nSet, nItemMax, d)
+            predCNN, predSMN, debug = self((x, x_size), training=True)
+            
+            # cross set label creation
+            # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet) 
+            y_true = self.cross_set_label(y_true)
+            y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+
+            # compute similairty with gallery and f1_bert_score
+            # input gallery as x and predSMN as y in each bellow set similarity function. 
+            if self.calc_set_sim == 'CS':
+                set_score = self.cross_set_score((gallery, predSMN), x_size)
+            elif self.calc_set_sim == 'BERTscore':
+                set_score = self.BERT_set_score((gallery, predSMN), x_size)
+            else:
+                print("指定された集合間類似度を測る関数は存在しません")
+                sys.exit()
+
+            # # down sampling
+            # if self.is_neg_down_sample:
+            #     y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
+
+            # loss
+            loss = self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
+
+        # train using gradients
+        trainable_vars = self.trainable_variables
+
+        # train parameters excepts for CNN
+        trainable_vars = [v for v in trainable_vars if 'cnn' not in v.name]
+        gradients = tape.gradient(loss, trainable_vars)
+
+        self.optimizer.apply_gradients(
+            (grad, var)
+            for (grad, var) in zip(gradients, trainable_vars)
+            if grad is not None)
+
+        # update metrics
+        self.compiled_metrics.update_state(set_score, y_true)
+
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
+
+    # test step
+    def test_step(self, data):
+
+        # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
+        x, y_true = data
+        # x : (nSet, nItemMax, dim) , x_size : (nSet, )
+        x , x_size = x
+        # gallery : (nSet, nItemMax, dim)
+        gallery = x 
+
+        # gallery linear projection(dimmension reduction) 
+        if self.isTrainableMLP:
+            gallery = self.fc1(gallery)
+            gallery = self.fc2(gallery)
+            gallery = self.fc3(gallery)
+        else:
+            gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+
+        # predict
+        # predSMN : (nSet, nItemMax, d)
+        predCNN, predSMN, debug = self((x, x_size), training=False)
+        
+        #cross set label creation
+        # y_true : [(1,0...,0),(0,1,...,0),...,(0,0,...,1)] locates where the positive is. (nSet, nSet) 
+        y_true = self.cross_set_label(y_true)
+        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
+
+        # compute similairty with gallery and f1_bert_score
+        # input gallery as x and predSMN as y in each bellow set similarity function. 
+        if self.calc_set_sim == 'CS':
+            set_score = self.cross_set_score((gallery, predSMN), x_size)
+        elif self.calc_set_sim == 'BERTscore':
+            set_score = self.BERT_set_score((gallery, predSMN), x_size)
+        else:
+            print("指定された集合間類似度を測る関数は存在しません")
+            sys.exit()
+
+        # # down sampling
+        # if self.is_neg_down_sample:
+        #     y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
+
+        # loss
+        self.compiled_loss(set_score, y_true, regularization_losses=self.losses)
+
+        # update metrics
+        self.compiled_metrics.update_state(set_score, y_true)
+
+        # return metrics as dictionary
+        return {m.name: m.result() for m in self.metrics}
 
     # predict step
     def predict_step(self,data):
         
         batch_data = data[0]
-
         # x = {x, x_size}, y_true : set label to identify positive pair. (nSet, )
-        x, x_size, category1, category2, item_label, y_test = batch_data
+        x, x_size, y_test, item_label  = batch_data
         # gallery : (nSet, nItemMax, dim)
         gallery = x
         # gallery linear projection(dimmension reduction) 
-        gallery = self.fc_cnn_proj(gallery)
+        if self.isTrainableMLP:
+            gallery = self.fc1(gallery)
+            gallery = self.fc2(gallery)
+            gallery = self.fc3(gallery)
+        else:
+            gallery = self.fc_cnn_proj(gallery) # : (nSet, nItemMax, d=baseChn*max_channel_ratio)
+
         # predict
         # predSMN : (nSet, nItemMax, d)
         predCNN, predSMN, debug = self((x, x_size), training=False)
@@ -510,20 +684,8 @@ class SMN(tf.keras.Model):
         replicated_set_label = tf.tile(tf.expand_dims(set_label, axis=1), [1, len(x[0])])
         query_id = tf.stack([replicated_set_label, item_label],axis=1)
         query_id = tf.transpose(query_id, [0,2,1])
-        # compute similairty with gallery and f1_bert_score
-        y_true = self.cross_set_label(y_test)
-        y_true = tf.linalg.set_diag(y_true, tf.zeros(y_true.shape[0], dtype=tf.float32))
-        cos_sim, category_acc, result_id, result_category2, ranks = self.item_selection((gallery, predSMN),(category1, category2, item_label, y_test, y_true))
 
-        if self.calc_set_sim == 'CS':
-            set_score = self.cross_set_score((gallery, predSMN), x_size)
-        elif self.calc_set_sim == 'BERTscore':
-            set_score = self.BERT_set_score((gallery, predSMN), x_size)
-        else:
-            print("指定された集合間類似度を測る関数は存在しません")
-            sys.exit()
-        
-        return predSMN, set_score, category_acc, query_id, result_id, result_category2, ranks
+        return predSMN, gallery, replicated_set_label, query_id
 #----------------------------
 # normalization
 class layer_normalization(tf.keras.layers.Layer):
@@ -598,7 +760,6 @@ class cross_set_score(tf.keras.layers.Layer):
         self.linear2 = tf.keras.layers.Dense(1,use_bias=False)
 
     def call(self, x, nItem):
-        # pdb.set_trace()
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
         # compute inner products between all pairs of items with cross-set feature (cseft)
         # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItemMax=2
