@@ -1,6 +1,7 @@
 import tensorflow as tf
 import numpy as np
 import sys
+import gc
 import pdb
 
 #----------------------------
@@ -140,6 +141,12 @@ class MLP(tf.keras.Model):
         # return metrics as dictionary
         return {m.name: m.result() for m in self.metrics}
 #----------------------------
+
+import gc
+import psutil
+import os
+import tracemalloc
+from tensorflow import keras
 
 class VLAD(tf.keras.Model):
     def __init__(self, num_features, k_centers, batch_size, seed_vectors, rep_vec_num=None, baseChn=32, num_heads=2, max_channel_ratio=2, is_Cvec_linear=None, calc_set_sim='CS'):
@@ -546,6 +553,11 @@ class SMN(tf.keras.Model):
         y_pred = tf.concat([y_pred_pos,y_pred_neg],axis=0)
 
         return y_true, y_pred
+    
+    def log_memory_usage(self, message):
+        process = psutil.Process(os.getpid())
+        print(f" {message} - Memory usage: {process.memory_info().rss / 1024 ** 2} MB")
+
     # train step
     def train_step(self,data):
     
@@ -606,6 +618,11 @@ class SMN(tf.keras.Model):
 
         # update metrics
         self.compiled_metrics.update_state(set_score, y_true)
+
+        # # 不要な変数を削除してガベージコレクタを呼び出す
+        # del tape, gradients, trainable_vars, set_score, gallery, x, x_size, y_true, loss
+        # gc.collect()
+        self.log_memory_usage("after train step")
 
         # return metrics as dictionary
         return {m.name: m.result() for m in self.metrics}
@@ -759,6 +776,10 @@ class cross_set_score(tf.keras.layers.Layer):
         self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False)
         self.linear2 = tf.keras.layers.Dense(1,use_bias=False)
 
+    def log_memory_usage(self, message):
+        process = psutil.Process(os.getpid())
+        print(f"  {message} : {process.memory_info().rss / 1024 ** 2} MB")
+
     def call(self, x, nItem):
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
         # compute inner products between all pairs of items with cross-set feature (cseft)
@@ -786,6 +807,7 @@ class cross_set_score(tf.keras.layers.Layer):
                 ,axis=1),axis=1)/nItem[i]/nItem[j]
                 for i in range(nSet_x)] for j in range(nSet_y)]
             )
+
         else:
             x, y = x # x, y : (nSet_x(y), nItemMax, dim)
             nSet_x = tf.shape(x)[0]
@@ -796,19 +818,25 @@ class cross_set_score(tf.keras.layers.Layer):
             # linear transofrmation from (nSet_x, nSet_y, nItemMax, Xdim) to (nSet_x, nSet_y, nItemMax, head_size*num_heads)
             x = self.linear(x)
             y = self.linear(y)
+
             # reshape (nSet_x (nSet_y), nItemMax, head_size*num_heads) to (nSet_x (nSet_y), nItemMax, num_heads, head_size)
             # transpose (nSet_x (nSet_y), nItemMax, num_heads, head_size) to (nSet_x (nSet_y), num_heads, nItemMax, head_size)
-            x = tf.transpose(tf.reshape(x,[nSet_x, nItemMax_x, self.num_heads, self.head_size]),[0,2,1,3])
-            y = tf.transpose(tf.reshape(y,[nSet_y, nItemMax_y, self.num_heads, self.head_size]),[0,2,1,3])
+            x = tf.transpose(tf.reshape(x,[nSet_x, nItemMax_x, self.num_heads, self.head_size]),[0,2,1,3]) # (nSet_x, num_heads, nItemMax, head_size)
+            y = tf.transpose(tf.reshape(y,[nSet_y, nItemMax_y, self.num_heads, self.head_size]),[0,2,1,3]) # (nSet_y, num_heads, nItemMax, head_size)
 
-            scores = tf.stack(
-            [[
-                tf.reduce_sum(tf.reduce_sum(
-                tf.keras.layers.LeakyReLU()(tf.matmul(y[j],tf.transpose(x[i],[0,2,1]))/sqrt_head_size)
-                , axis=1), axis=1)/nItem[i]/tf.cast(nItemMax_y, tf.float32)
-                for i in range(nSet_x)] for j in range(nSet_y)]
-            )
-             
+            x_expand = tf.expand_dims(x, 1) # (nSet_x, 1, num_heads, nItemMax, head_size)
+            y_expand = tf.expand_dims(y, 0) # (1, nSet_y, num_heads, nItemMax, head_size)
+
+            scores = tf.keras.layers.LeakyReLU()(tf.einsum('aijkl,ibjml->abjkm', x_expand, y_expand)) / sqrt_head_size # (nSet_y, nSet_x, num_heads, nItemMax_x, nItemMax_y)
+            scores = tf.reduce_sum(tf.reduce_sum(scores, axis=3), axis=3) / tf.reshape(nItem, (1, -1, 1)) / tf.cast(nItemMax_y, tf.float32) # (nSet_y, nSet_x, num_heads)
+
+            # scores = tf.stack(
+            # [[
+            #     tf.reduce_sum(tf.reduce_sum(
+            #     tf.keras.layers.LeakyReLU()(tf.matmul(y[j],tf.transpose(x[i],[0,2,1]))/sqrt_head_size), axis=1), axis=1)/nItem[i]/tf.cast(nItemMax_y, tf.float32)
+            #     for i in range(nSet_x)] for j in range(nSet_y)]
+            # )
+            
         # linearly combine multi-head score maps (nSet_y, nSet_x, num_heads) to (nSet_y, nSet_x, 1)
         scores = self.linear2(scores)
 
