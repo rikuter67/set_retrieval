@@ -12,6 +12,7 @@ from PIL import Image
 import pdb
 
 import models
+import SMscore_model
 import util
 import make_dataset as data
 
@@ -19,7 +20,7 @@ import make_dataset as data
 def parser_run(): # parser for run.py
     parser = argparse.ArgumentParser()
     parser.add_argument('-mode', type=str, choices=['maxPooling', 'poolingMA', 'CSS', 'setRepVec_biPMA', 'setRepVec_pivot'], default='setRepVec_pivot', help='mode of computing set-matching score')
-    parser.add_argument('-baseChn', type=int, default=32, help='number of base channel, default=32') # 次元数の半分？
+    parser.add_argument('-baseChn', type=int, default=64, help='number of base channel, default=32') # 次元数の半分？
     parser.add_argument('-model', type=str, default='VLAD', choices=['VLAD', 'SMN', 'random', 'CNN'], help='model type, default=VLAD')
     parser.add_argument('-num_layers', type=int, default=3, help='number of layers (attentions) in encoder and decoder, default=3')
     parser.add_argument('-num_heads', type=int, default=5, help='number of heads in attention, default=5')
@@ -48,7 +49,7 @@ def parser_run(): # parser for run.py
 def parser_comp(): # parser for comp_results.py
     parser = argparse.ArgumentParser(description='MNIST eventotal matching')
     parser.add_argument('-modes', default='3,4', help='list of score modes, maxPooling:0, poolingMA:1, CSS:2, setRepVec_biPMA:3, setRepVec_pivot:4, default:3,4')
-    parser.add_argument('-baseChn', type=int, default=32, help='number of base channel, default=32')
+    parser.add_argument('-baseChn', type=int, default=64, help='number of base channel, default=32')
     parser.add_argument('-num_layers', default='3', help='list of numbers of layers (attentions) in encoder and decoder, default=3')
     parser.add_argument('-num_heads', default='5', help='list of numbers of heads in attention, default=5')
     parser.add_argument('-is_set_norm', type=int, default=1, help='switch of set-normalization (1:on, 0:off), default=1')
@@ -61,7 +62,7 @@ def parser_comp(): # parser for comp_results.py
 parser = parser_run()
 args = parser.parse_args()
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '1' # choose GPU
+os.environ['CUDA_VISIBLE_DEVICES'] = '0' # choose GPU
 os.environ['TF_DETERMINISTIC_OPS'] = '1'
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
@@ -167,7 +168,7 @@ else:
 
 
 # # SetMatchingModelの定義と学習
-set_matching_model = models.SetMatchingModel(
+set_matching_model = SMscore_model.SetMatchingModel(
     isCNN=False,                     # CNNを使用するかどうか
     is_TrainableMLP=args.pretrained_mlp, # MLPを学習するかどうか（デフォルト: False）
     is_set_norm=args.is_set_norm,    # Set Normalizationの有無
@@ -178,7 +179,7 @@ set_matching_model = models.SetMatchingModel(
     mode='setRepVec_pivot',          # モード（デフォルト: 'setRepVec_pivot'）
     baseChn=64,            # ベースのチャンネル数
     baseMlp=args.mlp_projection_dim * 4,              # ベースのMLPのチャンネル数
-    rep_vec_num=1,                   # 代表ベクトルの数
+    rep_vec_num=3,                   # 代表ベクトルの数
     seed_init = seed_vectors,                   # シードの初期化
     cnn_class_num=2,                 # CNNの分類クラス数（デフォルト: 2）
     max_channel_ratio=2,             # チャンネル倍率
@@ -190,11 +191,15 @@ SetMatching_model_path = f"{experimentPath}_TrainScore"
 cp_callback = tf.keras.callbacks.ModelCheckpoint(SetMatching_model_path, monitor='val_Set_accuracy', save_weights_only=True, mode='max', save_best_only=True, save_freq='epoch', verbose=1)
 cp_earlystopping = tf.keras.callbacks.EarlyStopping(monitor='val_Set_accuracy', patience=args.patience, mode='max', min_delta=0.001, verbose=1)
 
-set_matching_model.compile(optimizer='adam', loss=util.Set_hinge_loss, metrics=util.Set_accuracy)
+set_matching_model.compile(optimizer="adam", loss='binary_crossentropy', metrics=['binary_accuracy'], run_eagerly=True)
 set_matching_model.fit(train_generator, epochs=args.epochs, validation_data=((x_valid, x_size_valid), y_valid), callbacks=[cp_callback, cp_earlystopping])
 
 # 事前学習モデルの保存
 set_matching_model.save_weights('experiment_TrainScore/set_matching_weights.ckpt')
+
+# # compute cmc
+# _, predSMN, _ = model_smn.predict((x_test, x_size_test), batch_size=test_batch_size, verbose=1)
+# cmcs = util.calc_cmcs(predSMN, y_test, batch_size=test_batch_size)
 #---------------------------------------------------------------------------------------
 
 

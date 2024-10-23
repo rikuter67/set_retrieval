@@ -77,6 +77,7 @@ class set_attention(tf.keras.layers.Layer):
         nItemMax_x = tf.shape(x)[2]
         nItemMax_y = tf.shape(y)[2]
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
+        pdb.set_trace()
 
         if self.self_attention:
             x = tf.reshape(x,[-1, nItemMax_x, self.head_size])
@@ -480,6 +481,8 @@ class SetMatchingModel(tf.keras.Model):
             y_true = tf.boolean_mask(y_true, mask)
             y_pred = tf.boolean_mask(y_pred, mask)
 
+            pdb.set_trace()
+
             # down sampling
             if self.is_neg_down_sample:
                 y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
@@ -537,7 +540,9 @@ class SetMatchingModel(tf.keras.Model):
         return {m.name: m.result() for m in self.metrics}
 
     # predict step
-    def predict_step(self,data):
+    def predict_step(self, data):
+        # xとyを統合して、xにする
+
         batch_data = data[0]
         x, x_size = batch_data
         
