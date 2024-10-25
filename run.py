@@ -162,10 +162,7 @@ else:
     x_valid, x_size_valid, y_valid = train_generator.data_generation_val()
     #########################################　削除部分　##########################################
 
-
-
 #---------------------------------------------------------------------------------------
-
 
 # # SetMatchingModelの定義と学習
 set_matching_model = SMscore_model.SetMatchingModel(
@@ -186,19 +183,43 @@ set_matching_model = SMscore_model.SetMatchingModel(
     is_neg_down_sample=args.is_neg_down_sample # ネガティブサンプルのダウンサンプリングを使用するかどうか
 )
 
+# 重みの読み込み
+# set_matching_model.load_weights('experiment_TrainScore/set_matching_weights.ckpt')
+
+# set_matching_model.compile(optimizer="adam", loss='binary_crossentropy', metrics=['binary_accuracy'], run_eagerly=True)
+
+# val_loss, val_accuracy = set_matching_model.evaluate((x_valid, x_size_valid), y_valid, verbose=1)
+
+# pdb.set_trace()
+
+# #----------------------------
+# # set data generator for test
+# test_generator = data.testDataGenerator(year=args.year, cand_num=5)
+
+
+# x_test = test_generator.x
+# x_size_test = test_generator.x_size
+# y_test = test_generator.y
+# test_batch_size = test_generator.batch_grp_num
+# #----------------------------
+
+# pdb.set_trace()
+
 # 学習
 SetMatching_model_path = f"{experimentPath}_TrainScore"
 cp_callback = tf.keras.callbacks.ModelCheckpoint(SetMatching_model_path, monitor='val_Set_accuracy', save_weights_only=True, mode='max', save_best_only=True, save_freq='epoch', verbose=1)
 cp_earlystopping = tf.keras.callbacks.EarlyStopping(monitor='val_Set_accuracy', patience=args.patience, mode='max', min_delta=0.001, verbose=1)
 
 set_matching_model.compile(optimizer="adam", loss='binary_crossentropy', metrics=['binary_accuracy'], run_eagerly=True)
-set_matching_model.fit(train_generator, epochs=args.epochs, validation_data=((x_valid, x_size_valid), y_valid), callbacks=[cp_callback, cp_earlystopping])
+set_matching_model.fit(train_generator, epochs=1, validation_data=((x_valid, x_size_valid), y_valid), callbacks=[cp_callback, cp_earlystopping])
 
 # 事前学習モデルの保存
 set_matching_model.save_weights('experiment_TrainScore/set_matching_weights.ckpt')
 
+pdb.set_trace()
+
 # # compute cmc
-# _, predSMN, _ = model_smn.predict((x_test, x_size_test), batch_size=test_batch_size, verbose=1)
+# _, predSMN, _ = set_matching_model.predict((x_test, x_size_test), batch_size=test_batch_size, verbose=1)
 # cmcs = util.calc_cmcs(predSMN, y_test, batch_size=test_batch_size)
 #---------------------------------------------------------------------------------------
 

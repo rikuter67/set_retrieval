@@ -34,7 +34,8 @@ class cross_set_score(tf.keras.layers.Layer):
         # compute inner products between all pairs of items with cross-set feature (cseft)
         # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItemMax=2
         # More generally, between set #i and set #j, cseft x[i,j] and x[j,i] are extracted.
-        # Outputing (nSet_x, nSet_y, num_heads)-score map        
+        # Outputing (nSet_x, nSet_y, num_heads)-score map
+     
         scores = tf.stack(
             [[
                 tf.reduce_sum(tf.reduce_sum(
@@ -77,7 +78,6 @@ class set_attention(tf.keras.layers.Layer):
         nItemMax_x = tf.shape(x)[2]
         nItemMax_y = tf.shape(y)[2]
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
-        pdb.set_trace()
 
         if self.self_attention:
             x = tf.reshape(x,[-1, nItemMax_x, self.head_size])
@@ -89,6 +89,7 @@ class set_attention(tf.keras.layers.Layer):
 
         # input (nSet, nSet, nItemMax, dim)
         # linear transofrmation (nSet, nSet, nItemMax, head_size*num_heads)
+        pdb.set_trace()
         y_K = self.linearK(y)   # Key
         y_V = self.linearV(y)   # Value
         x = self.linearQ(x)     # Query
@@ -276,10 +277,10 @@ class SetMatchingModel(tf.keras.Model):
     # compute score of set-pair using dot product
     def dot_set_score(self, x):
         nSet_x, nSet_y, dim = x.shape
-       
-        score = tf.stack([[tf.tensordot(x[i,j],x[j,i],1) for i in range(nSet_x)] for j in range(nSet_y)])
+        # score = tf.stack([[tf.tensordot(x[i,j],x[j,i],1) for i in range(nSet_x)] for j in range(nSet_y)]) #以前の方式
+        # score = tf.random.uniform(shape=(nSet_x, nSet_y), minval=0, maxval=100, dtype=tf.float32) # ランダムな値を返す
+        score = tf.einsum('ijk,jik->ij', x, x)
         score = tf.expand_dims(score,-1)/tf.cast(dim,float)
-
         return score
 
     def call(self, x): # X, Y にするべき
@@ -481,8 +482,6 @@ class SetMatchingModel(tf.keras.Model):
             y_true = tf.boolean_mask(y_true, mask)
             y_pred = tf.boolean_mask(y_pred, mask)
 
-            pdb.set_trace()
-
             # down sampling
             if self.is_neg_down_sample:
                 y_true, y_pred = self.neg_down_sampling(y_true, y_pred)
@@ -510,6 +509,7 @@ class SetMatchingModel(tf.keras.Model):
 
     # test step
     def test_step(self, data):
+        pdb.set_trace()
         x, y_true = data
         x , x_size = x
 
